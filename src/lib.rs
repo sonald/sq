@@ -105,24 +105,39 @@ pub async fn execute<S: AsRef<str>>(sql: S) -> Result<DataSet, MyError> {
         limit,
     } = parse(sql)?;
 
-    println!("source: {:?}", source);
+    match source {
+        Some(source) => {
+            println!("source: [{}]", source);
+            let data = fetch(&source).await?;
+            let ds = load(&data)?;
 
-    let data = fetch(&source).await?;
-    let ds = load(&data)?;
+            let ds = {
+                let ds = ds.0.lazy().select(projections);
+                let ds = if condition.is_some() {
+                    ds.filter(condition.unwrap())
+                } else {
+                    ds
+                };
+                if let Some(Expr::Literal(LiteralValue::Float64(f))) = limit {
+                    ds.limit(f as u32)
+                } else {
+                    ds
+                }
+            };
 
-    let ds = {
-        let ds = ds.0.lazy().select(projections);
-        let ds = if condition.is_some() {
-            ds.filter(condition.unwrap())
-        } else {
-            ds
-        };
-        if let Some(Expr::Literal(LiteralValue::Float64(f))) = limit {
-            ds.limit(f as u32)
-        } else {
-            ds
-        } 
-    };
+            Ok(DataSet(ds.collect()?))
+        }
+        _ => {
+            println!("no source");
+            let df = projections
+                .into_iter()
+                .fold(DataFrame::default().lazy(), |lf, e| {
+                    let nm = e.to_string();
+                    lf.with_column(e.alias(&nm))
+                })
+                .collect()?;
 
-    Ok(DataSet(ds.collect()?))
+            Ok(DataSet(df))
+        }
+    }
 }

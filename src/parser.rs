@@ -51,7 +51,7 @@ impl MyDialect {
 #[derive(Debug)]
 pub struct Query {
     pub(crate) projections: Vec<dsl::Expr>,
-    pub(crate) source: String,
+    pub(crate) source: Option<String>,
     pub(crate) condition: Option<dsl::Expr>,
     pub(crate) limit: Option<dsl::Expr>,
 }
@@ -87,21 +87,21 @@ impl<'a> TryFrom<SqlBinOp<'a>> for dsl::Operator {
     fn try_from(value: SqlBinOp<'a>) -> Result<Self, Self::Error> {
         use ast::BinaryOperator as op;
         match value.0 {
-            op::Gt => Ok(dsl::Operator::Gt),
-            op::Plus => Ok(dsl::Operator::Plus),
-            op::Minus => Ok(dsl::Operator::Minus),
-            op::Multiply => Ok(dsl::Operator::Multiply),
-            op::Divide => Ok(dsl::Operator::Divide),
-            op::Modulo => Ok(dsl::Operator::Modulus),
-            op::Lt => Ok(dsl::Operator::Lt),
-            op::GtEq => Ok(dsl::Operator::GtEq),
-            op::LtEq => Ok(dsl::Operator::LtEq),
-            op::Eq => Ok(dsl::Operator::Eq),
-            op::NotEq => Ok(dsl::Operator::NotEq),
-            op::And => Ok(dsl::Operator::And),
-            op::Or => Ok(dsl::Operator::Or),
-            op::Xor => Ok(dsl::Operator::Xor),
-            _ => Err(MyError::AstError(format!("BinaryOperator {} not supported", value.0))),
+            op::Gt => Ok(Self::Gt),
+            op::Plus => Ok(Self::Plus),
+            op::Minus => Ok(Self::Minus),
+            op::Multiply => Ok(Self::Multiply),
+            op::Divide => Ok(Self::Divide),
+            op::Modulo => Ok(Self::Modulus),
+            op::Lt => Ok(Self::Lt),
+            op::GtEq => Ok(Self::GtEq),
+            op::LtEq => Ok(Self::LtEq),
+            op::Eq => Ok(Self::Eq),
+            op::NotEq => Ok(Self::NotEq),
+            op::And => Ok(Self::And),
+            op::Or => Ok(Self::Or),
+            op::Xor => Ok(Self::Xor),
+            _ => Err(MyError::AstError(format!("SqlBinOp {} is not supported", value.0))),
         }
     }
 }
@@ -111,13 +111,13 @@ impl<'a> TryFrom<SqlExpression<'a>> for dsl::Expr {
 
     fn try_from(value: SqlExpression<'a>) -> Result<Self, Self::Error> {
         match value.0 {
-            ast::Expr::BinaryOp { left, op, right } => Ok(dsl::Expr::BinaryExpr { 
+            ast::Expr::BinaryOp { left, op, right } => Ok(Self::BinaryExpr { 
                 left: Box::new(SqlExpression(left).try_into()?),
                 op: SqlBinOp(op).try_into()?,
                 right: Box::new(SqlExpression(right).try_into()?), 
             }),
-            ast::Expr::Identifier(id) => Ok(dsl::Expr::Column(Arc::from(id.value.as_str()))),
-            ast::Expr::Value(v) => Ok(dsl::Expr::Literal(SqlValue(v).try_into()?)),
+            ast::Expr::Identifier(id) => Ok(Self::Column(Arc::from(id.value.as_str()))),
+            ast::Expr::Value(v) => Ok(Self::Literal(SqlValue(v).try_into()?)),
 
             _ => Err(MyError::AstError(format!("SqlExpression: {} not supported", value.0))),
         }
@@ -130,14 +130,15 @@ impl<'a> TryFrom<SqlSelectItem<'a>> for dsl::Expr {
     fn try_from(value: SqlSelectItem<'a>) -> Result<Self, Self::Error> {
         use ast::SelectItem::*;
         match value.0 {
-            Wildcard => Ok(dsl::Expr::Wildcard),
+            Wildcard => Ok(Self::Wildcard),
             ExprWithAlias { expr: ast::Expr::Identifier(id), alias } => {
-                Ok(dsl::Expr::Column(Arc::from(id.value.as_str())).alias(alias.value.as_str()))
+                Ok(Self::Column(Arc::from(id.value.as_str())).alias(alias.value.as_str()))
             },
-            //QualifiedWildcard(name) => Ok(dsl::Expr::Wildcard),
             UnnamedExpr(ast::Expr::Identifier(id)) => 
-                Ok(dsl::Expr::Column(Arc::from(id.value.as_str()))),
-            _ => todo!("unsupported")
+                Ok(Self::Column(Arc::from(id.value.as_str()))),
+            UnnamedExpr(ast::Expr::Value(value)) => 
+                Ok(Self::Literal(SqlValue(value).try_into()?)),
+            _ => todo!("SelectItem: {} is not supported", value.0)
         }
     }
 }
@@ -150,10 +151,14 @@ impl<'a> TryFrom<SqlSelect<'a>> for Query {
         println!("{:#?}", query);
 
         if let ast::SetExpr::Select(ref select) = query.body.as_ref() {
-            let source = if let ast::TableFactor::Table { name, .. } = &select.from[0].relation {
-                name.to_string()
+            let source = if let Some(ast::TableWithJoins {relation: ast::TableFactor::Table { name, .. }, .. }) = &select.from.first() {
+                Some(if name.0.len() > 1 {
+                    name.to_string()
+                } else {
+                    name.0.iter().map(|id|id.value.as_str()).collect::<Vec<_>>().join("")
+                })
             } else {
-                "default".to_owned()
+                None
             };
 
             let mut projections = vec![];
