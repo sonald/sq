@@ -3,7 +3,7 @@ use std::ops::Deref;
 use sq::execute;
 
 #[tokio::main]
-async fn main() -> Result<(), sq::MyError> {
+async fn main() -> Result<(), sq::SqError> {
     let sql = if let Some(sql) = std::env::args().nth(1) {
         sql
     } else {

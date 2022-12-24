@@ -1,4 +1,4 @@
-use super::MyError;
+use super::SqError;
 use async_trait::async_trait;
 
 #[derive(Debug)]
@@ -18,7 +18,7 @@ struct HttpFetcher<'a>(pub(crate) &'a str);
 
 #[async_trait]
 impl<'a> Fetch for HttpFetcher<'a> {
-    type Error = MyError;
+    type Error = SqError;
 
     async fn fetch(&self) -> Result<FetchData, Self::Error> {
         let url = self.0;
@@ -41,7 +41,7 @@ struct FileFetcher<'a>(pub(crate) &'a str);
 
 #[async_trait]
 impl<'a> Fetch for FileFetcher<'a> {
-    type Error = MyError;
+    type Error = SqError;
 
     async fn fetch(&self) -> Result<FetchData, Self::Error> {
         let url = &self.0[7..];
@@ -59,7 +59,7 @@ impl<'a> Fetch for FileFetcher<'a> {
     }
 }
 
-pub async fn fetch<S: AsRef<str>>(s: S) -> Result<FetchData, MyError> {
+pub async fn fetch<S: AsRef<str>>(s: S) -> Result<FetchData, SqError> {
     let url = s.as_ref();
     match &url[0..4] {
         "http" => HttpFetcher(url).fetch().await,

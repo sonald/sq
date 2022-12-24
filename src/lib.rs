@@ -6,7 +6,7 @@ pub mod fetch;
 pub mod parser;
 
 #[derive(Debug, thiserror::Error)]
-pub enum MyError {
+pub enum SqError {
     #[error("parse: {0}")]
     ParseError(#[from] sqlparser::parser::ParserError),
     #[error("request: {0}")]
@@ -54,7 +54,7 @@ pub trait Loader {
 struct CsvLoader<'a>(&'a Vec<u8>);
 
 impl<'a> Loader for CsvLoader<'a> {
-    type Error = MyError;
+    type Error = SqError;
 
     fn load(&self) -> Result<DataSet, Self::Error> {
         let df = CsvReader::new(Cursor::new(self.0))
@@ -68,7 +68,7 @@ impl<'a> Loader for CsvLoader<'a> {
 struct ParquetLoader<'a>(&'a Vec<u8>);
 
 impl<'a> Loader for ParquetLoader<'a> {
-    type Error = MyError;
+    type Error = SqError;
 
     fn load(&self) -> Result<DataSet, Self::Error> {
         let df = ParquetReader::new(Cursor::new(self.0))
@@ -82,14 +82,14 @@ impl<'a> Loader for ParquetLoader<'a> {
 struct GuessLoader<'a>(&'a Vec<u8>);
 
 impl<'a> Loader for GuessLoader<'a> {
-    type Error = MyError;
+    type Error = SqError;
 
     fn load(&self) -> Result<DataSet, Self::Error> {
-        Err(MyError::LoadError("Guess content failed".to_owned()))
+        Err(SqError::LoadError("Guess content failed".to_owned()))
     }
 }
 
-fn load(data: &FetchData) -> Result<DataSet, MyError> {
+fn load(data: &FetchData) -> Result<DataSet, SqError> {
     match data.hint.as_ref().map(|s| s.as_ref()).unwrap_or("") {
         "csv" => CsvLoader(&data.data).load(),
         "parquet" => ParquetLoader(&data.data).load(),
@@ -97,29 +97,36 @@ fn load(data: &FetchData) -> Result<DataSet, MyError> {
     }
 }
 
-pub async fn execute<S: AsRef<str>>(sql: S) -> Result<DataSet, MyError> {
+pub async fn execute<S: AsRef<str>>(sql: S) -> Result<DataSet, SqError> {
     let Query {
         projections,
         source,
         condition,
         limit,
+        offset,
+        order_by
     } = parse(sql)?;
 
     match source {
         Some(source) => {
             println!("source: [{}]", source);
             let data = fetch(&source).await?;
-            let ds = load(&data)?;
 
             let ds = {
-                let ds = ds.0.lazy().select(projections);
+                let ds = load(&data)?.0.lazy().select(projections);
                 let ds = if condition.is_some() {
                     ds.filter(condition.unwrap())
                 } else {
                     ds
                 };
-                if let Some(Expr::Literal(LiteralValue::Float64(f))) = limit {
-                    ds.limit(f as u32)
+                let ds = if order_by.len() > 0 {
+                    let (by, asc): (Vec<_>, Vec<_>) = order_by.into_iter().unzip();
+                    ds.sort_by_exprs(by, asc, false)
+                } else {
+                    ds
+                };
+                if offset.is_some() || limit.is_some() {
+                    ds.slice(offset.unwrap_or(0), limit.unwrap_or(usize::MAX) as u32)
                 } else {
                     ds
                 }

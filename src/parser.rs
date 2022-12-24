@@ -4,7 +4,7 @@ use sqlparser::{ast, dialect, parser};
 use polars::lazy::dsl;
 use polars::prelude::LiteralValue;
 
-use super::MyError;
+use super::SqError;
 
 #[derive(Debug)]
 struct MyDialect {
@@ -53,7 +53,9 @@ pub struct Query {
     pub(crate) projections: Vec<dsl::Expr>,
     pub(crate) source: Option<String>,
     pub(crate) condition: Option<dsl::Expr>,
-    pub(crate) limit: Option<dsl::Expr>,
+    pub(crate) limit: Option<usize>,
+    pub(crate) offset: Option<i64>,
+    pub(crate) order_by: Vec<(dsl::Expr, bool)>,
 }
 
 #[derive(Debug)]
@@ -66,9 +68,15 @@ struct SqlSelect<'a>(&'a ast::Query);
 struct SqlBinOp<'a>(&'a ast::BinaryOperator);
 #[derive(Debug)]
 struct SqlValue<'a>(&'a ast::Value);
+#[derive(Debug)]
+struct SqlLimit<'a>(&'a ast::Expr);
+#[derive(Debug)]
+struct SqlOffset<'a>(&'a ast::Offset);
+#[derive(Debug)]
+struct SqlOrderBy<'a>(&'a ast::OrderByExpr);
 
 impl<'a> TryFrom<SqlValue<'a>> for LiteralValue {
-    type Error = MyError;
+    type Error = SqError;
 
     fn try_from(value: SqlValue<'a>) -> Result<Self, Self::Error> {
         use ast::Value::*;
@@ -82,7 +90,7 @@ impl<'a> TryFrom<SqlValue<'a>> for LiteralValue {
 }
 
 impl<'a> TryFrom<SqlBinOp<'a>> for dsl::Operator {
-    type Error = MyError;
+    type Error = SqError;
 
     fn try_from(value: SqlBinOp<'a>) -> Result<Self, Self::Error> {
         use ast::BinaryOperator as op;
@@ -101,13 +109,44 @@ impl<'a> TryFrom<SqlBinOp<'a>> for dsl::Operator {
             op::And => Ok(Self::And),
             op::Or => Ok(Self::Or),
             op::Xor => Ok(Self::Xor),
-            _ => Err(MyError::AstError(format!("SqlBinOp {} is not supported", value.0))),
+            _ => Err(SqError::AstError(format!("SqlBinOp {} is not supported", value.0))),
         }
     }
 }
 
+impl<'a> TryFrom<SqlOffset<'a>> for i64 {
+    type Error = SqError;
+
+    fn try_from(value: SqlOffset<'a>) -> Result<Self, Self::Error> {
+        match value.0 {
+            ast::Offset {value: ast::Expr::Value(ast::Value::Number(s, _b)), ..} => Ok(s.parse()?),
+            _ => Err(SqError::AstError(format!("SqlOffset {} is invalid", value.0))),
+        }
+    }
+}
+
+impl<'a> TryFrom<SqlLimit<'a>> for usize {
+    type Error = SqError;
+
+    fn try_from(value: SqlLimit<'a>) -> Result<Self, Self::Error> {
+        match value.0 {
+            ast::Expr::Value(ast::Value::Number(s, _b)) => Ok(s.parse()?),
+            _ => Err(SqError::AstError(format!("SqlLimit {} invalid", value.0))),
+        }
+    }
+}
+
+impl<'a> TryFrom<SqlOrderBy<'a>> for (dsl::Expr, bool) {
+    type Error = SqError;
+
+    fn try_from(value: SqlOrderBy<'a>) -> Result<Self, Self::Error> {
+        let ast::OrderByExpr { expr, asc, .. } = value.0;
+        Ok((SqlExpression(expr).try_into()?, !asc.unwrap_or(true)))
+    }
+}
+
 impl<'a> TryFrom<SqlExpression<'a>> for dsl::Expr {
-    type Error = MyError;
+    type Error = SqError;
 
     fn try_from(value: SqlExpression<'a>) -> Result<Self, Self::Error> {
         match value.0 {
@@ -119,13 +158,13 @@ impl<'a> TryFrom<SqlExpression<'a>> for dsl::Expr {
             ast::Expr::Identifier(id) => Ok(Self::Column(Arc::from(id.value.as_str()))),
             ast::Expr::Value(v) => Ok(Self::Literal(SqlValue(v).try_into()?)),
 
-            _ => Err(MyError::AstError(format!("SqlExpression: {} not supported", value.0))),
+            _ => Err(SqError::AstError(format!("SqlExpression: {} not supported", value.0))),
         }
     }
 }
 
 impl<'a> TryFrom<SqlSelectItem<'a>> for dsl::Expr {
-    type Error = MyError;
+    type Error = SqError;
 
     fn try_from(value: SqlSelectItem<'a>) -> Result<Self, Self::Error> {
         use ast::SelectItem::*;
@@ -144,7 +183,7 @@ impl<'a> TryFrom<SqlSelectItem<'a>> for dsl::Expr {
 }
 
 impl<'a> TryFrom<SqlSelect<'a>> for Query {
-    type Error = MyError;
+    type Error = SqError;
 
     fn try_from(value: SqlSelect<'a>) -> Result<Self, Self::Error> {
         let query = value.0;
@@ -171,15 +210,26 @@ impl<'a> TryFrom<SqlSelect<'a>> for Query {
             };
 
             let limit = match query.limit {
-                Some(ref e) => Some(SqlExpression(e).try_into()?),
+                Some(ref e) => Some(SqlLimit(e).try_into()?),
                 None => None,
             };
+            let offset = match query.offset {
+                Some(ref e) => Some(SqlOffset(e).try_into()?),
+                None => None,
+            };
+            let mut order_by = vec![];
+            for e in query.order_by.iter() {
+                order_by.push(SqlOrderBy(e).try_into()?);
+            }
+
 
             Ok(Query {
                 projections,
                 source,
                 condition,
                 limit,
+                offset,
+                order_by,
             })
         } else {
             todo!("not implemented")
@@ -188,7 +238,7 @@ impl<'a> TryFrom<SqlSelect<'a>> for Query {
 }
 
 
-pub fn parse<S: AsRef<str>>(sql: S) -> Result<Query, MyError> {
+pub fn parse<S: AsRef<str>>(sql: S) -> Result<Query, SqError> {
     let dialect = MyDialect::new();
     match parser::Parser::parse_sql(&dialect, sql.as_ref())?[0] {
         ast::Statement::Query(ref query) => {
@@ -196,4 +246,64 @@ pub fn parse<S: AsRef<str>>(sql: S) -> Result<Query, MyError> {
         }
         _ => Err(sqlparser::parser::ParserError::ParserError("sql not supported".to_owned()).into()),
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use polars::lazy::dsl;
+    use polars::prelude::*;
+
+    #[test]
+    fn test_parse_1() {
+        let sql = r#" select 'welcome', 'to', 'sq' "#;
+        let res = parse(sql);
+        assert!(res.is_ok());
+
+        let q = res.unwrap();
+        assert_eq!(q.source, None); 
+        assert_eq!(q.limit, None);
+        assert_eq!(q.condition, None);
+        assert_eq!(q.projections.len(), 3);
+        assert_eq!(q.projections[0], dsl::Expr::Literal(LiteralValue::Utf8("welcome".to_owned())));
+        assert_eq!(q.projections[1], dsl::Expr::Literal(LiteralValue::Utf8("to".to_owned())));
+        assert_eq!(q.projections[2], dsl::Expr::Literal(LiteralValue::Utf8("sq".to_owned())));
+    }
+
+    #[test]
+    fn test_parse_2() {
+        let url = "https://raw.githubusercontent.com/owid/covid-19-data/master/public/data/latest/owid-covid-latest.csv";
+        let sql = format!(r#"
+            select continent, "location", "total_cases", "new_cases", "total_deaths"
+            from {}
+            where total_cases > 200000.0 and continent = 'Africa'
+            limit 10
+            offset 5
+            "#, url);
+        let res = parse(sql);
+        assert!(res.is_ok());
+
+        let q = res.unwrap();
+        assert_eq!(q.source, Some(url.to_owned())); 
+        assert_eq!(q.limit, Some(10));
+        match q.condition {
+            Some(dsl::Expr::BinaryExpr { left, op: dsl::Operator::And, right }) => {
+                match left.as_ref() {
+                    dsl::Expr::BinaryExpr { op: dsl::Operator::Gt, .. } => assert!(true),
+                    _ => assert!(false, "left condition is wrong"),
+                }
+                match right.as_ref() {
+                    dsl::Expr::BinaryExpr { op: dsl::Operator::Eq, .. } => assert!(true),
+                    _ => assert!(false, "right condition is wrong"),
+                }
+                assert!(true)
+            },
+            _ => assert!(false),
+        }
+        assert_eq!(q.projections.len(), 5);
+        for (i,nm) in ["continent", "location", "total_cases", "new_cases", "total_deaths"].iter().enumerate() {
+            assert_eq!(q.projections[i], col(nm));
+        }
+    }
+
 }
