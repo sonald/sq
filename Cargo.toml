@@ -1,20 +1,6 @@
-[package]
-name = "sq"
-version = "0.1.0"
-edition = "2021"
-autobins = true
-autoexamples = true
+[workspace]
+members = [
+  "sq",
+  "sq-py"
+]
 
-
-[dependencies]
-thiserror = "1"
-async-trait = "0.1"
-sqlparser = "0.27"
-polars = { version = "0.25", features = ["parquet", "json", "lazy"] }
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] } 
-tokio = { version = "1", features = ["full"]} 
-tracing = "0.1"
-
-[dev-dependencies]
-tracing-subscriber = "0.2"
-tokio = {version = "1", features = ["full"]}

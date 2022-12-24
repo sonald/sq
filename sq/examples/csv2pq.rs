@@ -18,12 +18,17 @@ async fn main() -> std::result::Result<(), SqError> {
     match execute(sql).await {
         Ok(mut ds) => {
             println!("{}", ds.deref());
-            ParquetWriter::new(OpenOptions::new().truncate(true).write(true).create(true).open("covid.parquet")?)
-                .finish(&mut ds)?;
-            }
+            ParquetWriter::new(
+                OpenOptions::new()
+                    .truncate(true)
+                    .write(true)
+                    .create(true)
+                    .open("covid.parquet")?,
+            )
+            .finish(&mut ds)?;
+        }
         Err(e) => println!("{}", e),
     }
-
 
     Ok(())
 }

@@ -23,6 +23,8 @@ pub enum SqError {
     ConvertError(#[from] std::num::ParseIntError),
     #[error("convert: {0}")]
     ConvertError2(#[from] std::num::ParseFloatError),
+    #[error("from_utf8: {0}")]
+    FromUtf8Error(#[from] std::string::FromUtf8Error),
 }
 
 use fetch::*;
@@ -42,6 +44,20 @@ impl Deref for DataSet {
 impl DerefMut for DataSet {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl DataSet {
+    pub fn to_csv(&mut self) -> Result<String, SqError> {
+        let mut buf = vec![];
+        CsvWriter::new(&mut buf).finish(self)?;
+        Ok(String::from_utf8(buf)?)
+    }
+
+    pub fn to_parquet(&mut self) -> Result<Vec<u8>, SqError> {
+        let mut buf = vec![];
+        ParquetWriter::new(&mut buf).finish(self)?;
+        Ok(buf)
     }
 }
 
