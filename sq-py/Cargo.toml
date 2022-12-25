@@ -12,3 +12,6 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.17.3", features = ["extension-module"] }
 tokio = { version = "1", features = ["full"]}
 sq = { path = "../sq"}
+
+[build-dependencies]
+pyo3-build-config = "*"
