@@ -1,6 +1,7 @@
 use polars::prelude::*;
 use std::io::Cursor;
 use std::ops::{Deref, DerefMut};
+use lazy_static::lazy_static;
 
 pub mod fetch;
 pub mod parser;
@@ -25,6 +26,8 @@ pub enum SqError {
     ConvertError2(#[from] std::num::ParseFloatError),
     #[error("from_utf8: {0}")]
     FromUtf8Error(#[from] std::string::FromUtf8Error),
+    #[error("utf8: {0}")]
+    Utf8Error(#[from] std::str::Utf8Error),
 }
 
 use fetch::*;
@@ -95,6 +98,32 @@ impl<'a> Loader for ParquetLoader<'a> {
 }
 
 #[derive(Debug)]
+struct CommandLoader<'a>(&'a Vec<u8>);
+impl <'a> Loader for CommandLoader<'a> {
+    type Error = SqError;
+
+    fn load(&self) -> Result<DataSet, Self::Error> {
+        lazy_static! {
+            static ref PAT: regex::Regex = regex::Regex::new(r"\p{White_Space}+").unwrap();
+        }
+
+        let mut rows = vec![];
+
+        let mut s = std::str::from_utf8(self.0.as_slice())?.lines();
+        let schema = s.next().unwrap().split_ascii_whitespace().collect::<Vec<_>>();
+
+        for ln in s {
+            let r = ln.trim().splitn(schema.len(), &*PAT).map(|s| AnyValue::Utf8(s.trim())).collect();
+            rows.push(row::Row::new(r));
+        }
+
+        let schema = schema.iter().map(|n| Ok(Field::new(n, DataType::Utf8))).collect::<Vec<_>>();
+        let df = DataFrame::from_rows_and_schema(&rows, &Schema::try_from_fallible(schema)?)?;
+        Ok(DataSet(df))
+    }
+}
+
+#[derive(Debug)]
 struct GuessLoader<'a>(&'a Vec<u8>);
 
 impl<'a> Loader for GuessLoader<'a> {
@@ -109,6 +138,7 @@ fn load(data: &FetchData) -> Result<DataSet, SqError> {
     match data.hint.as_ref().map(|s| s.as_ref()).unwrap_or("") {
         "csv" => CsvLoader(&data.data).load(),
         "parquet" => ParquetLoader(&data.data).load(),
+        "console" => CommandLoader(&data.data).load(),
         _ => GuessLoader(&data.data).load(),
     }
 }
