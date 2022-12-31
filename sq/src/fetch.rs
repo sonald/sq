@@ -10,42 +10,36 @@ pub struct FetchData {
 
 #[async_trait]
 pub trait Fetch {
-    type Error;
-    async fn fetch(&self) -> Result<FetchData, Self::Error>;
+    async fn fetch(&self, data: &str) -> Result<FetchData, SqError>;
 }
 
 #[derive(Debug)]
-struct HttpFetcher<'a>(pub(crate) &'a str);
+struct HttpFetcher;
 
 #[async_trait]
-impl<'a> Fetch for HttpFetcher<'a> {
-    type Error = SqError;
-
-    async fn fetch(&self) -> Result<FetchData, Self::Error> {
-        let url = self.0;
-        let hint = if url.ends_with(".csv") {
+impl Fetch for HttpFetcher {
+    async fn fetch(&self, data: &str) -> Result<FetchData, SqError> {
+        let hint = if data.ends_with(".csv") {
             Some("csv".to_owned())
-        } else if url.ends_with(".parquet") {
+        } else if data.ends_with(".parquet") {
             Some("parquet".to_owned())
         } else {
             None
         };
         Ok(FetchData {
-            data: reqwest::get(url).await?.bytes().await?.to_vec(),
+            data: reqwest::get(data).await?.bytes().await?.to_vec(),
             hint,
         })
     }
 }
 
 #[derive(Debug)]
-struct FileFetcher<'a>(pub(crate) &'a str);
+struct FileFetcher;
 
 #[async_trait]
-impl<'a> Fetch for FileFetcher<'a> {
-    type Error = SqError;
-
-    async fn fetch(&self) -> Result<FetchData, Self::Error> {
-        let url = &self.0[7..];
+impl Fetch for FileFetcher {
+    async fn fetch(&self, data: &str) -> Result<FetchData, SqError> {
+        let url = &data[7..];
         let hint = if url.ends_with(".csv") {
             Some("csv".to_owned())
         } else if url.ends_with(".parquet") {
@@ -61,21 +55,20 @@ impl<'a> Fetch for FileFetcher<'a> {
 }
 
 #[derive(Debug)]
-struct CommandFetcher<'a>(pub(crate) &'a str);
+struct CommandFetcher;
 
 #[async_trait]
-impl<'a> Fetch for CommandFetcher<'a> {
-    type Error = SqError;
-
-    async fn fetch(&self) -> Result<FetchData, Self::Error> {
-        let cmd = &self.0[6..];
+impl Fetch for CommandFetcher {
+    async fn fetch(&self, data: &str) -> Result<FetchData, SqError> {
+        let cmd = &data[6..];
         let (cmd, args) = {
             let mut parts = cmd.split_terminator('?');
-            (parts.next().unwrap(), parts.next().unwrap())
+            (parts.next().unwrap(), parts.next().map(|s| vec![s]).unwrap_or(vec![]))
         };
 
+        let output = Command::new(cmd).args(args).output()?;
         Ok(FetchData {
-            data: Command::new(cmd).arg(args).output().unwrap().stdout,
+            data: output.stdout,
             hint: Some("console".to_owned()),
         })
     }
@@ -83,10 +76,11 @@ impl<'a> Fetch for CommandFetcher<'a> {
 
 pub async fn fetch<S: AsRef<str>>(s: S) -> Result<FetchData, SqError> {
     let url = s.as_ref();
-    match &url[0..4] {
-        "http" => HttpFetcher(url).fetch().await,
-        "file" => FileFetcher(url).fetch().await,
-        "cmd:" => CommandFetcher(url).fetch().await,
+    let f: Box<dyn Fetch> = match &url[0..4] {
+        "http" => Box::new(HttpFetcher),
+        "file" => Box::new(FileFetcher),
+        "cmd:" => Box::new(CommandFetcher),
         _ => todo!("unsupported url"),
-    }
+    };
+    f.fetch(url).await
 }
